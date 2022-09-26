@@ -10,12 +10,13 @@ from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.pipeline import Pipeline
 
-from logger import update_predict_log, update_train_log
-from cslib import fetch_ts, engineer_features
+from sklearn.metrics import median_absolute_error, r2_score
+from solutionguidance.cslib import fetch_ts, engineer_features
+from solutionguidance.logger import update_predict_log, update_train_log
 
 ## model specific variables (iterate the version and note with each change)
 MODEL_DIR = "models"
-MODEL_VERSION = 0.1
+MODEL_VERSION = 0.2
 MODEL_VERSION_NOTE = "supervised learing model for time-series"
 
 def _model_train(df,tag,test=False):
@@ -54,12 +55,12 @@ def _model_train(df,tag,test=False):
 
     pipe_rf = Pipeline(steps=[('scaler', StandardScaler()),
                               ('rf', RandomForestRegressor())])
-    
-    grid = GridSearchCV(pipe_rf, param_grid=param_grid_rf, cv=5, iid=False, n_jobs=-1)
+
+    grid = GridSearchCV(pipe_rf, param_grid=param_grid_rf, cv=5, n_jobs=-1)
     grid.fit(X_train, y_train)
     y_pred = grid.predict(X_test)
     eval_rmse =  round(np.sqrt(mean_squared_error(y_test,y_pred)))
-    
+    eval_r2_score = r2_score(y_test, y_pred)
     ## retrain using all data
     grid.fit(X, y)
     model_name = re.sub("\.","_",str(MODEL_VERSION))
@@ -79,10 +80,72 @@ def _model_train(df,tag,test=False):
     runtime = "%03d:%02d:%02d"%(h, m, s)
 
     ## update log
-    update_train_log(tag,(str(dates[0]),str(dates[-1])),{'rmse':eval_rmse},runtime,
+    update_train_log(tag,(str(dates[0]),str(dates[-1])),{'rmse':eval_rmse, 'r2_score': eval_r2_score},runtime,
                      MODEL_VERSION, MODEL_VERSION_NOTE,test=True)
-  
 
+def _model_train(df,tag,test=False):
+    """
+    example funtion to train model
+
+    The 'test' flag when set to 'True':
+        (1) subsets the data and serializes a test version
+        (2) specifies that the use of the 'test' log file
+
+    """
+
+
+    ## start timer for runtime
+    time_start = time.time()
+
+    X,y,dates = engineer_features(df)
+
+    if test:
+        n_samples = int(np.round(0.3 * X.shape[0]))
+        subset_indices = np.random.choice(np.arange(X.shape[0]),n_samples,
+                                          replace=False).astype(int)
+        mask = np.in1d(np.arange(y.size),subset_indices)
+        y=y[mask]
+        X=X[mask]
+        dates=dates[mask]
+
+    ## Perform a train-test split
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25,
+                                                        shuffle=True, random_state=42)
+    ## train a random forest model
+    param_grid_rf = {
+        'rf__criterion': ['mse','mae'],
+        'rf__n_estimators': [10,15,20,25]
+    }
+
+    pipe_rf = Pipeline(steps=[('scaler', StandardScaler()),
+                              ('rf', RandomForestRegressor())])
+
+    grid = GridSearchCV(pipe_rf, param_grid=param_grid_rf, cv=5, n_jobs=-1)
+    grid.fit(X_train, y_train)
+    y_pred = grid.predict(X_test)
+    eval_rmse =  round(np.sqrt(mean_squared_error(y_test,y_pred)))
+    eval_r2_score = r2_score(y_test, y_pred)
+    ## retrain using all data
+    grid.fit(X, y)
+    model_name = re.sub("\.","_",str(MODEL_VERSION))
+    if test:
+        saved_model = os.path.join(MODEL_DIR,
+                                   "test-{}-{}.joblib".format(tag,model_name))
+        print("... saving test version of model: {}".format(saved_model))
+    else:
+        saved_model = os.path.join(MODEL_DIR,
+                                   "sl-{}-{}.joblib".format(tag,model_name))
+        print("... saving model: {}".format(saved_model))
+
+    joblib.dump(grid,saved_model)
+
+    m, s = divmod(time.time()-time_start, 60)
+    h, m = divmod(m, 60)
+    runtime = "%03d:%02d:%02d"%(h, m, s)
+
+    ## update log
+    update_train_log(tag,(str(dates[0]),str(dates[-1])),{'rmse':eval_rmse, 'r2_score': eval_r2_score},runtime,
+                     MODEL_VERSION, MODEL_VERSION_NOTE,test=True)
 def model_train(data_dir,test=False):
     """
     funtion to train model given a df
